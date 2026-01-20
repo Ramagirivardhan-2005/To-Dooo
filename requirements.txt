@@ -142,7 +142,6 @@ pyttsx3==2.99
 pytube==15.0.0
 pytz==2024.2
 pywebview==5.4
-pywin32==311
 PyYAML==6.0.2
 redis==6.2.0
 referencing==0.36.2
