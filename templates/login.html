@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI System Access</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="auth-body">
+    <div class="auth-card glass-panel">
+        <div class="auth-header">
+            <div class="logo-circle"><i class="fas fa-brain"></i></div>
+            <h2 class="neon-text">NEURAL ACCESS</h2>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-container">
+                    {% for category, message in messages %}
+                        <div class="alert {{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <form id="login-form" action="/login" method="POST" class="auth-form">
+            <div class="input-wrapper">
+                <i class="fas fa-envelope input-icon"></i>
+                <input type="email" name="email" placeholder="User Email" required autocomplete="off">
+            </div>
+            <div class="input-wrapper">
+                <i class="fas fa-lock input-icon"></i>
+                <input type="password" name="password" placeholder="Passcode" required>
+            </div>
+            <button type="submit" class="glow-btn full-width">INITIALIZE SESSION</button>
+            <div class="auth-footer">
+                <p>New Entity? <a href="#" onclick="switchForm('signup')">Create Identity</a></p>
+            </div>
+        </form>
+
+        <form id="signup-form" action="/signup" method="POST" class="auth-form hidden-form">
+            <div class="input-wrapper">
+                <i class="fas fa-user-astronaut input-icon"></i>
+                <input type="text" name="username" placeholder="Designation" required autocomplete="off">
+            </div>
+            <div class="input-wrapper">
+                <i class="fas fa-envelope input-icon"></i>
+                <input type="email" name="email" placeholder="User Email" required autocomplete="off">
+            </div>
+            <div class="input-wrapper">
+                <i class="fas fa-key input-icon"></i>
+                <input type="password" name="password" placeholder="Set Passcode" required>
+            </div>
+            <button type="submit" class="glow-btn full-width">REGISTER ENTITY</button>
+            <div class="auth-footer">
+                <p>Existing User? <a href="#" onclick="switchForm('login')">Return to Login</a></p>
+            </div>
+        </form>
+    </div>
+    <script>
+        function switchForm(view) {
+            document.getElementById('login-form').style.display = view === 'signup' ? 'none' : 'block';
+            document.getElementById('signup-form').style.display = view === 'signup' ? 'block' : 'none';
+        }
+    </script>
+</body>
+</html>

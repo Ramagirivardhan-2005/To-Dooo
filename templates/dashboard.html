@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Dashboard V.7</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/js/all.min.js"></script>
+</head>
+<body>
+
+<div class="grid-container">
+    
+    <header class="header">
+        <div class="logo"><i class="fas fa-network-wired"></i> TASK CORE</div>
+        <button onclick="openAddModal()" class="glow-btn main-add"><i class="fas fa-plus"></i> NEW TASK</button>
+        <div class="user-controls">
+            <img src="https://api.dicebear.com/7.x/bottts/svg?seed={{ user.username }}" class="header-avatar">
+            <a href="/logout" class="logout-btn"><i class="fas fa-power-off"></i></a>
+        </div>
+    </header>
+
+    <aside class="left-nav">
+        <div class="profile-section">
+            <h3>{{ user.username }}</h3>
+            <p class="status-indicator">● ONLINE</p>
+        </div>
+        <nav class="stats-menu">
+            <a href="/dashboard?filter=all" class="stat-item {% if current_filter == 'all' %}active{% endif %}">
+                <i class="fas fa-layer-group"></i> <span>All Tasks</span> <span class="count">{{ stats.total }}</span>
+            </a>
+            <a href="/dashboard?filter=completed" class="stat-item {% if current_filter == 'completed' %}active{% endif %}">
+                <i class="fas fa-check-circle"></i> <span>Completed</span> <span class="count">{{ stats.completed or 0 }}</span>
+            </a>
+            <a href="/dashboard?filter=expired" class="stat-item {% if current_filter == 'expired' %}active{% endif %}">
+                <i class="fas fa-exclamation-triangle"></i> <span>Expired</span> <span class="count">{{ stats.expired or 0 }}</span>
+            </a>
+        </nav>
+        <a href="/dashboard?filter=deleted" class="bin-btn"><i class="fas fa-trash-alt"></i> Recycle Bin</a>
+    </aside>
+
+    <main class="main-content">
+        <div class="content-header"><h2>Active Directives</h2></div>
+        <div class="task-list">
+            {% if tasks|length == 0 %}
+                <div class="empty-state"><i class="fas fa-robot"></i><p>No tasks found.</p></div>
+            {% endif %}
+
+            {% for task in tasks %}
+            <div class="task-card {{ task.status }} {% if task.is_overdue %}overdue{% endif %}">
+                <div class="card-status-bar"></div>
+                <div class="card-body">
+                    <div class="task-top">
+                        <h4>{{ task.title }}</h4>
+                        <span class="deadline-tag"><i class="far fa-clock"></i> {{ task.deadline }}</span>
+                    </div>
+                    <p class="task-desc">{{ task.description }}</p>
+                    <div class="badge-row">
+                        {% if task.repeat_freq != 'none' %}
+                            <span class="repeat-badge"><i class="fas fa-sync"></i> {{ task.repeat_freq|title }}</span>
+                        {% endif %}
+                        {% if task.reminder_minutes > 0 %}
+                            <span class="repeat-badge" style="color:#00f3ff; border-color: #00f3ff;"><i class="fas fa-bell"></i> {{ task.reminder_minutes }}m</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card-actions">
+                    {% if task.status != 'deleted' %}
+                        <form action="/update_task/{{ task.id }}" method="POST">
+                            <input type="hidden" name="action" value="toggle">
+                            <button class="action-btn complete"><i class="fas fa-check"></i></button>
+                        </form>
+                        <button onclick="openEditModal({{ task.id }})" class="action-btn edit"><i class="fas fa-pen"></i></button>
+                        <form action="/update_task/{{ task.id }}" method="POST">
+                            <input type="hidden" name="action" value="delete">
+                            <button class="action-btn delete"><i class="fas fa-trash"></i></button>
+                        </form>
+                    {% else %}
+                        <span class="deleted-tag">DELETED</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </main>
+
+    <aside class="right-nav">
+        <div class="calendar-wrapper">
+            <div class="cal-header-row">
+                <button onclick="changeMonth(-1)" class="cal-nav-btn"><i class="fas fa-chevron-left"></i></button>
+                <h3 id="calTitle">Loading...</h3>
+                <button onclick="changeMonth(1)" class="cal-nav-btn"><i class="fas fa-chevron-right"></i></button>
+            </div>
+            
+            <div class="cal-year-row">
+                <select id="yearSelect" onchange="jumpToYear()" class="year-select"></select>
+            </div>
+
+            <div class="cal-days-header">
+                <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+            </div>
+
+            <div id="calendar" class="calendar-grid"></div>
+            <a href="/dashboard" class="clear-date-btn">Reset to Today</a>
+        </div>
+    </aside>
+
+    <footer class="footer">
+        <form action="/dashboard" method="GET" class="search-form">
+            <i class="fas fa-search search-icon"></i>
+            <input type="text" name="search" placeholder="Search..." value="{{ request.args.get('search', '') }}">
+            <input type="hidden" name="filter" value="{{ current_filter }}">
+        </form>
+    </footer>
+</div>
+
+<div id="taskModal" class="modal" style="display: none;">
+    <div class="modal-content glass-panel">
+        <div class="modal-header">
+            <h2 id="modalTitle">NEW DIRECTIVE</h2>
+            <span onclick="closeModal()" class="close-btn">&times;</span>
+        </div>
+        <form id="taskForm" action="/add_task" method="POST">
+            <input type="hidden" name="action" id="actionInput" value="modify" disabled>
+            <div class="input-group">
+                <label>Title</label>
+                <input type="text" name="title" id="inpTitle" required autocomplete="off">
+            </div>
+            <div class="input-group">
+                <label>Description</label>
+                <input type="text" name="description" id="inpDesc" autocomplete="off">
+            </div>
+            <div class="input-group">
+                <label>Deadline</label>
+                <input type="datetime-local" name="deadline" id="inpDate" required>
+            </div>
+            <div class="row-group">
+                <div class="input-group half">
+                    <label>Repeat</label>
+                    <select name="repeat" id="inpRepeat" class="custom-select">
+                        <option value="none">Never</option>
+                        <option value="daily">Every Day</option>
+                        <option value="weekly">Every Week</option>
+                        <option value="monthly">Every Month</option>
+                        <option value="yearly">Every Year</option>
+                    </select>
+                </div>
+                <div class="input-group half">
+                    <label>Remind</label>
+                    <select name="reminder" id="inpReminder" class="custom-select">
+                        <option value="0">None</option>
+                        <option value="5">5 Minutes</option>
+                        <option value="10">10 Minutes</option>
+                        <option value="15">15 Minutes</option>
+                        <option value="30">30 Minutes</option>
+                        <option value="60">1 Hour</option>
+                    </select>
+                </div>
+            </div>
+            <button type="submit" id="modalBtn" class="glow-btn full-width">UPLOAD</button>
+        </form>
+    </div>
+</div>
+
+<script>
+    const taskDates = JSON.parse('{{ task_dates | safe }}');
+    let currentMonth = {{ cal_month }};
+    let currentYear = {{ cal_year }};
+    const tasksData = {};
+    {% for task in tasks %}
+        tasksData[{{ task.id }}] = {
+            id: {{ task.id }},
+            title: `{{ task.title }}`,
+            description: `{{ task.description }}`,
+            deadline: `{{ task.deadline.strftime('%Y-%m-%dT%H:%M') }}`,
+            repeat: `{{ task.repeat_freq }}`,
+            reminder: {{ task.reminder_minutes }},
+            status: `{{ task.status }}`
+        };
+    {% endfor %}
+</script>
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
