@@ -5,13 +5,28 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from flask_bcrypt import Bcrypt
 from datetime import datetime, timedelta
 import json
+import urllib.parse # Added to handle password encoding safely
 
 app = Flask(__name__)
 app.secret_key = 'ai_super_secret_key'
 
-# --- MONGODB CONNECTION ---
-client = MongoClient('mongodb://localhost:27017/')
-db = client['ai_todo_flask']
+# --- MONGODB CONNECTION (UPDATED FOR ATLAS) ---
+# We must encode the password because it contains an '@' symbol
+username = urllib.parse.quote_plus('vardhanramagiri84_db_user')
+password = urllib.parse.quote_plus('Vardhan@2005')
+
+# Construct the connection string safely
+uri = f"mongodb+srv://{username}:{password}@cluster0.592u1ya.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+try:
+    client = MongoClient(uri)
+    # Send a ping to confirm a successful connection
+    client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB Atlas!")
+except Exception as e:
+    print(f"Error connecting to MongoDB Atlas: {e}")
+
+db = client['ai_todo_flask'] 
 
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
