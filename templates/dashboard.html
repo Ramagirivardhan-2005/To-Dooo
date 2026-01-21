@@ -39,7 +39,13 @@
     </aside>
 
     <main class="main-content">
-        <div class="content-header"><h2>Active Directives</h2></div>
+        <div class="content-header">
+            <h2>
+                {% if current_filter == 'expired' %}Expired Directives
+                {% elif current_filter == 'completed' %}Completed Directives
+                {% else %}Active Directives{% endif %}
+            </h2>
+        </div>
         <div class="task-list">
             {% if tasks|length == 0 %}
                 <div class="empty-state"><i class="fas fa-robot"></i><p>No tasks found.</p></div>
@@ -51,15 +57,23 @@
                 <div class="card-body">
                     <div class="task-top">
                         <h4>{{ task.title }}</h4>
-                        <span class="deadline-tag"><i class="far fa-clock"></i> {{ task.deadline }}</span>
+                        {% if task.status != 'completed' and task.status != 'deleted' %}
+                            <span class="timer-badge" data-deadline="{{ task.deadline.isoformat() }}">Loading...</span>
+                        {% endif %}
                     </div>
+                    
+                    <div class="meta-row">
+                        <span class="deadline-tag"><i class="far fa-clock"></i> {{ task.deadline.strftime('%b %d, %H:%M') }}</span>
+                    </div>
+
                     <p class="task-desc">{{ task.description }}</p>
+                    
                     <div class="badge-row">
                         {% if task.repeat_freq != 'none' %}
                             <span class="repeat-badge"><i class="fas fa-sync"></i> {{ task.repeat_freq|title }}</span>
                         {% endif %}
                         {% if task.reminder_minutes > 0 %}
-                            <span class="repeat-badge" style="color:#00f3ff; border-color: #00f3ff;"><i class="fas fa-bell"></i> {{ task.reminder_minutes }}m</span>
+                            <span class="reminder-badge"><i class="fas fa-bell"></i> {{ task.reminder_minutes }}m</span>
                         {% endif %}
                     </div>
                 </div>
@@ -67,12 +81,14 @@
                     {% if task.status != 'deleted' %}
                         <form action="/update_task/{{ task.id }}" method="POST">
                             <input type="hidden" name="action" value="toggle">
-                            <button class="action-btn complete"><i class="fas fa-check"></i></button>
+                            <button class="action-btn complete" title="Toggle Complete"><i class="fas fa-check"></i></button>
                         </form>
-                        <button onclick="openEditModal({{ task.id }})" class="action-btn edit"><i class="fas fa-pen"></i></button>
+                        
+                        <button onclick="openEditModal('{{ task.id }}')" class="action-btn edit" title="Edit"><i class="fas fa-pen"></i></button>
+                        
                         <form action="/update_task/{{ task.id }}" method="POST">
                             <input type="hidden" name="action" value="delete">
-                            <button class="action-btn delete"><i class="fas fa-trash"></i></button>
+                            <button class="action-btn delete" title="Delete"><i class="fas fa-trash"></i></button>
                         </form>
                     {% else %}
                         <span class="deleted-tag">DELETED</span>
@@ -102,19 +118,27 @@
             <div id="calendar" class="calendar-grid"></div>
             <a href="/dashboard" class="clear-date-btn">Reset to Today</a>
         </div>
+        
+        <div class="calendar-legend">
+            <h4>Task Status</h4>
+            <div class="legend-items">
+                <div class="legend-item"><div class="legend-dot daily"></div><span>Pending</span></div>
+                <div class="legend-item"><div class="legend-dot single"></div><span>Expired</span></div>
+            </div>
+        </div>
     </aside>
 
     <footer class="footer">
         <form action="/dashboard" method="GET" class="search-form">
             <i class="fas fa-search search-icon"></i>
-            <input type="text" name="search" placeholder="Search..." value="{{ request.args.get('search', '') }}">
+            <input type="text" name="search" placeholder="Search directives..." value="{{ request.args.get('search', '') }}">
             <input type="hidden" name="filter" value="{{ current_filter }}">
         </form>
     </footer>
 </div>
 
 <div id="taskModal" class="modal" style="display: none;">
-    <div class="modal-content glass-panel">
+    <div class="modal-content">
         <div class="modal-header">
             <h2 id="modalTitle">NEW DIRECTIVE</h2>
             <span onclick="closeModal()" class="close-btn">&times;</span>
@@ -165,10 +189,12 @@
     const taskDates = JSON.parse('{{ task_dates | safe }}');
     let currentMonth = {{ cal_month }};
     let currentYear = {{ cal_year }};
+    
+    // !!! CRITICAL FIX: Added Quotes around keys for MongoDB Strings !!!
     const tasksData = {};
     {% for task in tasks %}
-        tasksData[{{ task.id }}] = {
-            id: {{ task.id }},
+        tasksData['{{ task.id }}'] = {
+            id: '{{ task.id }}',
             title: `{{ task.title }}`,
             description: `{{ task.description }}`,
             deadline: `{{ task.deadline.strftime('%Y-%m-%dT%H:%M') }}`,

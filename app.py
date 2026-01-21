@@ -1,47 +1,38 @@
 from flask import Flask, render_template, request, redirect, url_for, flash
-from mysql.connector import connect, Error
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 import json
 
 app = Flask(__name__)
 app.secret_key = 'ai_super_secret_key'
 
-# --- CONFIGURATION ---
-db_config = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': 'Vardhan@2005', # <--- CHANGE THIS TO YOUR PASSWORD
-    'database': 'ai_todo_flask'
-}
+# --- MONGODB CONNECTION ---
+client = MongoClient('mongodb://localhost:27017/')
+db = client['ai_todo_flask']
 
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
 class User(UserMixin):
-    def __init__(self, id, username, email):
-        self.id = id
+    def __init__(self, user_id, username, email):
+        self.id = str(user_id) # Convert ObjectId to string for Flask-Login
         self.username = username
         self.email = email
 
 @login_manager.user_loader
 def load_user(user_id):
     try:
-        conn = connect(**db_config)
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
-        user = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if user:
-            return User(id=user['id'], username=user['username'], email=user['email'])
-    except Error:
-        pass
-    return None
+        user_data = db.users.find_one({"_id": ObjectId(user_id)})
+        if user_data:
+            return User(user_id=user_data['_id'], username=user_data['username'], email=user_data['email'])
+    except:
+        return None
 
-# --- AUTH ROUTES ---
+# --- ROUTES ---
 @app.route('/')
 def home():
     if current_user.is_authenticated:
@@ -53,18 +44,14 @@ def login():
     if request.method == 'POST':
         email = request.form.get('email')
         password = request.form.get('password')
-        conn = connect(**db_config)
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
-        user_data = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        user_data = db.users.find_one({"email": email})
+        
         if user_data and bcrypt.check_password_hash(user_data['password'], password):
-            user = User(id=user_data['id'], username=user_data['username'], email=user_data['email'])
+            user = User(user_id=user_data['_id'], username=user_data['username'], email=user_data['email'])
             login_user(user)
             return redirect(url_for('dashboard'))
         else:
-            flash('Access Denied: Invalid Credentials', 'danger')
+            flash('Invalid Credentials', 'danger')
     return render_template('login.html')
 
 @app.route('/signup', methods=['POST'])
@@ -72,20 +59,16 @@ def signup():
     username = request.form.get('username')
     email = request.form.get('email')
     password = request.form.get('password')
+    
+    if db.users.find_one({"email": email}):
+        flash('Email already exists', 'danger')
+        return redirect(url_for('login'))
+        
     hashed_pw = bcrypt.generate_password_hash(password).decode('utf-8')
-    try:
-        conn = connect(**db_config)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (username, email, password) VALUES (%s, %s, %s)", 
-                       (username, email, hashed_pw))
-        conn.commit()
-        conn.close()
-        flash('Identity Created. Initialize Login.', 'success')
-    except Error as e:
-        flash(f'Database Error: {e}', 'danger')
+    db.users.insert_one({"username": username, "email": email, "password": hashed_pw})
+    flash('Account created', 'success')
     return redirect(url_for('login'))
 
-# --- DASHBOARD ---
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -93,7 +76,6 @@ def dashboard():
     search_query = request.args.get('search', '')
     date_filter = request.args.get('date', '')
     
-    # Calendar Context
     today = datetime.today()
     try:
         current_month = int(request.args.get('month', today.month))
@@ -102,94 +84,83 @@ def dashboard():
         current_month = today.month
         current_year = today.year
 
-    conn = connect(**db_config)
-    cursor = conn.cursor(dictionary=True)
+    # 1. Auto-Expire Tasks (Update status if deadline passed)
+    db.tasks.update_many(
+        {"status": "pending", "deadline": {"$lt": datetime.now()}},
+        {"$set": {"status": "expired"}}
+    )
 
-    # 1. Fetch ALL tasks
-    query = "SELECT * FROM tasks WHERE user_id = %s"
-    params = [current_user.id]
-
-    if filter_type == 'completed': query += " AND status = 'completed'"
-    elif filter_type == 'expired': query += " AND status = 'expired'"
-    elif filter_type == 'deleted': query += " AND status = 'deleted'"
-    else: query += " AND status != 'deleted'"
+    # 2. Build Query
+    query = {"user_id": ObjectId(current_user.id)}
+    
+    if filter_type == 'completed': query["status"] = 'completed'
+    elif filter_type == 'expired': query["status"] = 'expired'
+    elif filter_type == 'deleted': query["status"] = 'deleted'
+    else: query["status"] = {"$ne": 'deleted'}
 
     if search_query:
-        query += " AND (title LIKE %s OR description LIKE %s)"
-        params.extend([f"%{search_query}%", f"%{search_query}%"])
+        query["$or"] = [
+            {"title": {"$regex": search_query, "$options": "i"}},
+            {"description": {"$regex": search_query, "$options": "i"}}
+        ]
 
-    # --- CUSTOM SORTING LOGIC ---
-    # Priority: Pending (1) -> Expired (2) -> Completed (3) -> Deleted (4)
-    # Then sort by Deadline (closest first)
-    query += """ ORDER BY 
-                 CASE status 
-                    WHEN 'pending' THEN 1 
-                    WHEN 'expired' THEN 2 
-                    WHEN 'completed' THEN 3 
-                    ELSE 4 
-                 END ASC, 
-                 deadline ASC"""
+    # 3. Fetch Tasks
+    raw_tasks = list(db.tasks.find(query))
 
-    cursor.execute(query, params)
-    raw_tasks = cursor.fetchall()
-    
-    # Stats
-    cursor.execute("""
-        SELECT COUNT(*) as total,
-        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END) as expired
-        FROM tasks WHERE user_id = %s AND status != 'deleted'
-    """, (current_user.id,))
-    stats = cursor.fetchone()
-    conn.close()
+    # 4. Sort (Pending > Expired > Completed > Deleted)
+    status_priority = {'pending': 1, 'expired': 2, 'completed': 3, 'deleted': 4}
+    raw_tasks.sort(key=lambda x: (status_priority.get(x.get('status'), 5), x.get('deadline')))
 
-    # --- CALENDAR PROJECTION ---
+    # 5. Process Tasks for Template
     display_tasks = []
     projected_dates = set()
-    projection_limit = date(current_year + 5, 12, 31) 
+    projection_limit = datetime(current_year + 5, 12, 31)
     
-    target_date = None
+    target_date_obj = None
     if date_filter:
-        target_date = datetime.strptime(date_filter, '%Y-%m-%d').date()
+        target_date_obj = datetime.strptime(date_filter, '%Y-%m-%d').date()
 
     for task in raw_tasks:
-        task_date = task['deadline'].date()
-        freq = task['repeat_freq']
+        task['id'] = str(task['_id']) # Important: Convert ObjectId to string
         
-        # Add actual date
-        projected_dates.add(str(task_date))
+        # Calculate Overdue for CSS
+        task['is_overdue'] = task['deadline'] < datetime.now() and task['status'] != 'completed'
+
+        # Calendar Projection Logic
+        deadline_dt = task['deadline']
+        projected_dates.add(str(deadline_dt.date()))
         
-        # Add future dates if repeating
+        freq = task.get('repeat_freq', 'none')
         if freq != 'none':
-            curr = task_date
-            while curr <= projection_limit:
+            curr = deadline_dt
+            while curr.date() <= projection_limit.date():
                 if freq == 'daily': curr += timedelta(days=1)
                 elif freq == 'weekly': curr += timedelta(weeks=1)
                 elif freq == 'monthly': 
                     next_month = curr.replace(day=28) + timedelta(days=4)
-                    curr = next_month.replace(day=min(task_date.day, 28))
+                    curr = next_month.replace(day=min(deadline_dt.day, 28))
                 elif freq == 'yearly': 
                     curr = curr.replace(year=curr.year + 1)
-                
-                projected_dates.add(str(curr))
+                projected_dates.add(str(curr.date()))
 
-        # Filter Logic for Display
-        should_show = False
-        if not target_date:
-            should_show = True
-        else:
-            if task_date == target_date: should_show = True
-            elif freq == 'daily' and target_date > task_date: should_show = True
-            elif freq == 'weekly' and target_date > task_date:
-                if (target_date - task_date).days % 7 == 0: should_show = True
-            elif freq == 'monthly' and target_date > task_date:
-                if target_date.day == task_date.day: should_show = True
-            elif freq == 'yearly' and target_date > task_date:
-                if target_date.month == task_date.month and target_date.day == task_date.day: should_show = True
+        # Filter Logic
+        should_show = True
+        if target_date_obj:
+            should_show = False
+            task_date = deadline_dt.date()
+            if task_date == target_date_obj: should_show = True
+            # (Simplified recurring check for brevity, exact date match for now)
+            elif str(target_date_obj) in projected_dates: should_show = True
 
         if should_show:
-            task['is_overdue'] = task['deadline'] < datetime.now() and task['status'] == 'pending'
             display_tasks.append(task)
+
+    # Stats
+    stats = {
+        'total': db.tasks.count_documents({"user_id": ObjectId(current_user.id), "status": {"$ne": "deleted"}}),
+        'completed': db.tasks.count_documents({"user_id": ObjectId(current_user.id), "status": "completed"}),
+        'expired': db.tasks.count_documents({"user_id": ObjectId(current_user.id), "status": "expired"})
+    }
 
     return render_template('dashboard.html', 
                            tasks=display_tasks, 
@@ -203,72 +174,63 @@ def dashboard():
 @app.route('/add_task', methods=['POST'])
 @login_required
 def add_task():
-    title = request.form.get('title')
-    desc = request.form.get('description')
-    deadline = request.form.get('deadline')
-    repeat = request.form.get('repeat')
-    reminder = request.form.get('reminder')
-    
-    conn = connect(**db_config)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO tasks (user_id, title, description, deadline, repeat_freq, reminder_minutes) 
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (current_user.id, title, desc, deadline, repeat, reminder))
-    conn.commit()
-    conn.close()
+    deadline = datetime.strptime(request.form.get('deadline'), '%Y-%m-%dT%H:%M')
+    db.tasks.insert_one({
+        "user_id": ObjectId(current_user.id),
+        "title": request.form.get('title'),
+        "description": request.form.get('description'),
+        "deadline": deadline,
+        "repeat_freq": request.form.get('repeat'),
+        "reminder_minutes": int(request.form.get('reminder')),
+        "status": "pending"
+    })
     return redirect(url_for('dashboard'))
 
-@app.route('/update_task/<int:id>', methods=['POST'])
+@app.route('/update_task/<task_id>', methods=['POST'])
 @login_required
-def update_task(id):
+def update_task(task_id):
     action = request.form.get('action')
-    conn = connect(**db_config)
-    cursor = conn.cursor(dictionary=True)
-
+    task = db.tasks.find_one({"_id": ObjectId(task_id)})
+    
     if action == 'toggle':
-        cursor.execute("SELECT * FROM tasks WHERE id=%s", (id,))
-        task = cursor.fetchone()
+        new_status = 'completed' if task['status'] != 'completed' else 'pending'
+        db.tasks.update_one({"_id": ObjectId(task_id)}, {"$set": {"status": new_status}})
         
-        if task['status'] == 'pending':
-            cursor.execute("UPDATE tasks SET status='completed' WHERE id=%s", (id,))
+        # If completing a repeating task, create next one
+        if new_status == 'completed' and task['repeat_freq'] != 'none':
+            old = task['deadline']
+            nxt = None
+            if task['repeat_freq'] == 'daily': nxt = old + timedelta(days=1)
+            elif task['repeat_freq'] == 'weekly': nxt = old + timedelta(weeks=1)
+            elif task['repeat_freq'] == 'monthly': nxt = (old.replace(day=28) + timedelta(days=4)).replace(day=min(old.day, 28))
+            elif task['repeat_freq'] == 'yearly': nxt = old.replace(year=old.year + 1)
             
-            # Auto-create next task if repeating
-            if task['repeat_freq'] != 'none':
-                old_date = task['deadline']
-                new_date = None
-                
-                if task['repeat_freq'] == 'daily': new_date = old_date + timedelta(days=1)
-                elif task['repeat_freq'] == 'weekly': new_date = old_date + timedelta(weeks=1)
-                elif task['repeat_freq'] == 'monthly': new_date = old_date + timedelta(days=30)
-                elif task['repeat_freq'] == 'yearly': new_date = old_date + timedelta(days=365)
-                
-                if new_date:
-                    cursor.execute("""
-                        INSERT INTO tasks (user_id, title, description, deadline, repeat_freq, reminder_minutes) 
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (current_user.id, task['title'], task['description'], new_date, task['repeat_freq'], task['reminder_minutes']))
-        else:
-            cursor.execute("UPDATE tasks SET status='pending' WHERE id=%s", (id,))
+            if nxt:
+                db.tasks.insert_one({
+                    "user_id": ObjectId(current_user.id),
+                    "title": task['title'],
+                    "description": task['description'],
+                    "deadline": nxt,
+                    "repeat_freq": task['repeat_freq'],
+                    "reminder_minutes": task['reminder_minutes'],
+                    "status": "pending"
+                })
 
     elif action == 'delete':
-        cursor.execute("UPDATE tasks SET status='deleted' WHERE id=%s", (id,))
-    
+        db.tasks.update_one({"_id": ObjectId(task_id)}, {"$set": {"status": "deleted"}})
+        
     elif action == 'modify':
-        title = request.form.get('title')
-        desc = request.form.get('description')
-        deadline = request.form.get('deadline')
-        repeat = request.form.get('repeat')
-        reminder = request.form.get('reminder')
+        deadline = datetime.strptime(request.form.get('deadline'), '%Y-%m-%dT%H:%M')
+        status = 'pending' if task['status'] == 'expired' else task['status']
+        db.tasks.update_one({"_id": ObjectId(task_id)}, {"$set": {
+            "title": request.form.get('title'),
+            "description": request.form.get('description'),
+            "deadline": deadline,
+            "repeat_freq": request.form.get('repeat'),
+            "reminder_minutes": int(request.form.get('reminder')),
+            "status": status
+        }})
 
-        cursor.execute("""
-            UPDATE tasks 
-            SET title=%s, description=%s, deadline=%s, repeat_freq=%s, reminder_minutes=%s 
-            WHERE id=%s
-        """, (title, desc, deadline, repeat, reminder, id))
-
-    conn.commit()
-    conn.close()
     return redirect(url_for('dashboard'))
 
 @app.route('/logout')
